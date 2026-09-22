@@ -10,6 +10,7 @@ from typing import Any
 from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.config import KVEventsConfig, VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import (
+    ECArtifactMissError,
     ECConnectorBase,
     ECConnectorMetadata,
     ECConnectorRole,
@@ -176,6 +177,11 @@ class Scheduler(SchedulerInterface):
             self.ec_connector = ECConnectorFactory.create_connector(
                 config=self.vllm_config, role=ECConnectorRole.SCHEDULER
             )
+        # on_miss=fail: requests whose encoder artifact missed in strict
+        # mode. Collected during scheduling, finished with FINISHED_ERROR
+        # at the step-end safe point in update_from_output (mirrors the
+        # KV-load failure handling — the engine stays alive).
+        self._ec_failed_req_ids: set[str] = set()
 
         num_gpu_blocks = self.cache_config.num_gpu_blocks
         assert num_gpu_blocks is not None and num_gpu_blocks > 0
@@ -1643,6 +1649,13 @@ class Scheduler(SchedulerInterface):
                     continue
 
                 if self.encoder_cache_manager.check_and_update_cache(request, i):
+                    # vit-artifact E store-verify
+                    # (VIT_ARTIFACT_E_VERIFY_STORE=1): notify the connector
+                    # of the L1 hit — it point-checks the external store and
+                    # schedules a resave of the L1-resident tensor when the
+                    # artifact was deleted out-of-band.
+                    if self.ec_connector is not None:
+                        self.ec_connector.note_l1_hit(request, i)
                     # The encoder input is already computed and cached from a
                     # previous step.
                     continue
@@ -1698,9 +1711,24 @@ class Scheduler(SchedulerInterface):
             if curr_embeds_end - curr_embeds_start == 0:
                 continue
 
-            if self.ec_connector is not None and self.ec_connector.has_cache_item(
-                item_identifier
-            ):
+            ec_hit = False
+            if self.ec_connector is not None:
+                try:
+                    ec_hit = self.ec_connector.has_cache_item(
+                        item_identifier, num_embeds=num_encoder_embeds
+                    )
+                except ECArtifactMissError as e:
+                    # Strict mode (artifact_on_miss=fail): request-level
+                    # failure. Collect the request; scheduling continues
+                    # with miss semantics so loop state stays consistent.
+                    logger.warning(
+                        "encoder artifact miss for request %s (%s): %s",
+                        request.request_id,
+                        item_identifier,
+                        e.reason,
+                    )
+                    self._ec_failed_req_ids.add(request.request_id)
+            if ec_hit:
                 mm_hashes_to_schedule.add(item_identifier)
                 external_load_encoder_input.append(i)
                 num_embeds_to_schedule += num_encoder_embeds
@@ -2087,6 +2115,11 @@ class Scheduler(SchedulerInterface):
         self.grammar_compile_error_reqs.clear()
         if failed_kv_load_req_ids and not self.recompute_kv_load_failures:
             error_req_ids.update(failed_kv_load_req_ids)
+        # EC Connector: requests whose encoder artifact missed in strict
+        # mode (on_miss=fail) — same FINISHED_ERROR path as KV-load
+        # failures; the engine and all other requests stay alive.
+        error_req_ids.update(self._ec_failed_req_ids)
+        self._ec_failed_req_ids.clear()
 
         if error_req_ids:
             error_reqs = self.finish_requests(

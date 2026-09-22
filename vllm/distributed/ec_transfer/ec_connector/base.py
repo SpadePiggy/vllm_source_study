@@ -58,6 +58,22 @@ class ECConnectorMetadata(ABC):  # noqa: B024
     pass
 
 
+class ECArtifactMissError(RuntimeError):
+    """Encoder artifact strict-miss: request-level failure, engine stays alive.
+
+    Raised by an ECConnector's has_cache_item when artifact_on_miss=fail.
+    The scheduler collects affected request ids during scheduling and
+    finishes them with FINISHED_ERROR at the step-end safe point
+    (mirrors the KV-load failure handling).
+    """
+
+    reason: str = ""
+
+    def __init__(self, reason: str = ""):
+        self.reason = reason or self.__class__.__name__
+        super().__init__(self.reason)
+
+
 class ECConnectorWorkerMetadata(ABC):
     """
     Abstract Metadata used to communicate back
@@ -80,6 +96,12 @@ class ECConnectorWorkerMetadata(ABC):
 
 
 class ECConnectorBase(ABC):
+    # Opt-in to the rank0-pull + TP-broadcast consumer load path: True
+    # only for remote-store connectors, where one GET + broadcast beats
+    # N per-rank GETs. Shared-memory connectors read the region directly
+    # on every rank and must keep this False.
+    broadcast_loads: bool = False
+
     def __init__(self, vllm_config: "VllmConfig", role: ECConnectorRole):
         self._connector_metadata: ECConnectorMetadata | None = None
         self._vllm_config = vllm_config
@@ -227,16 +249,30 @@ class ECConnectorBase(ABC):
     # Scheduler-side methods
     # ==============================
 
+    def note_l1_hit(self, request: "Request", index: int) -> None:
+        """Scheduler-side notification: encoder input ``index`` of
+        ``request`` is being served from the engine's in-process encoder
+        cache (L1 hit), so the scheduler skips encoding it. Default:
+        no-op. Artifact connectors may override to verify the external
+        store still holds the artifact and schedule a re-upload when it
+        doesn't.
+        """
+        return
+
     @abstractmethod
     def has_cache_item(
         self,
         identifier: str,
+        num_embeds: int | None = None,
     ) -> bool:
         """
         Check if a single encoder cache exists
 
         Args:
             identifier (str): the identifier of the media.
+            num_embeds (int | None): scheduler-expected embedding count.
+                Connectors doing external loads cross-check it against
+                the artifact before deciding to skip local encoding.
 
         Returns:
             A bool where value is True if cache exist for

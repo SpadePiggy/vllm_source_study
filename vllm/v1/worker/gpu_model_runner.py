@@ -3066,11 +3066,12 @@ class GPUModelRunner(
         output: torch.Tensor,
         ec_manager_metadata: "EncoderCacheManagerMetadata | None",
         free_encoder_mm_hashes: list[str],
+        **save_kwargs,
     ) -> None:
         """Store an encoder output for later multimodal embedding gather."""
         del ec_manager_metadata, free_encoder_mm_hashes
         self.encoder_cache[mm_hash] = output
-        self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
+        self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash, **save_kwargs)
 
     def _execute_mm_encoder(
         self, scheduler_output: "SchedulerOutput"
@@ -3279,12 +3280,25 @@ class GPUModelRunner(
             current_item_idx += num_items
 
         # Cache the encoder outputs by mm_hash
-        for mm_hash, output in zip(mm_hashes, encoder_outputs):
+        for idx, (mm_hash, output) in enumerate(zip(mm_hashes, encoder_outputs)):
+            # vit-artifact: pass the processor-produced grid so PD's synth
+            # placeholder can be forward-constructed at the exact same grid
+            # (image_grid_thw lives in the item's kwargs dict).
+            save_kwargs = {}
+            if idx < len(mm_kwargs):
+                # UserDict access yields MultiModalFieldElem; the tensor is .data
+                elem = mm_kwargs[idx][1].get("image_grid_thw")
+                grid = getattr(elem, "data", elem)
+                if grid is not None:
+                    save_kwargs["grid_thw"] = (
+                        grid.tolist() if hasattr(grid, "tolist") else grid
+                    )
             self._cache_encoder_output(
                 mm_hash,
                 output,
                 scheduler_output.ec_manager_metadata,
                 scheduler_output.free_encoder_mm_hashes,
+                **save_kwargs,
             )
             logger.debug("Finish execute for mm hash %s", mm_hash)
 

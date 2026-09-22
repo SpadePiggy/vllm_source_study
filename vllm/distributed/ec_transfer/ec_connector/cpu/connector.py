@@ -84,9 +84,9 @@ class ECCPUConnector(ECConnectorBase):
         )
 
     # Scheduler-side forwarders.
-    def has_cache_item(self, identifier: str) -> bool:
+    def has_cache_item(self, identifier: str, num_embeds: int | None = None) -> bool:
         assert self.connector_scheduler is not None
-        return self.connector_scheduler.has_cache_item(identifier)
+        return self.connector_scheduler.has_cache_item(identifier, num_embeds)
 
     def ensure_cache_available(
         self, request: "Request", num_computed_tokens: int

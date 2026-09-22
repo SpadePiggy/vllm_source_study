@@ -4008,7 +4008,7 @@ def test_ec_connector_with_partial_cache_hit_multi_round(use_kv_connector):
 
     # Mock partial cache hit: 1st and 3rd missing, 2nd and 4th exist
     scheduler.ec_connector.has_cache_item = Mock(
-        side_effect=lambda hash_val: has_cache_item_result_map_1[hash_val]
+        side_effect=lambda hash_val, **kwargs: has_cache_item_result_map_1[hash_val]
     )
     scheduler.ec_connector.update_state_after_alloc = Mock(
         wraps=scheduler.ec_connector.update_state_after_alloc
@@ -4085,7 +4085,7 @@ def test_ec_connector_with_partial_cache_hit_multi_round(use_kv_connector):
 
     # Mock partial cache hit: only hash1_A and hash1_C exist in connector
     scheduler.ec_connector.has_cache_item = Mock(
-        side_effect=lambda hash_val: has_cache_item_result_map_2[hash_val]
+        side_effect=lambda hash_val, **kwargs: has_cache_item_result_map_2[hash_val]
     )
 
     scheduler.add_request(request2)
@@ -4613,7 +4613,7 @@ def test_ec_connector_allocate_encoder_tokens_with_external_load(use_kv_connecto
 
     # Mock cache hit: MM of request1 NOT cached remotely, request2 cached remotely
     scheduler.ec_connector.has_cache_item = Mock(
-        side_effect=lambda hash_value: hash_value in mm_hashes_list_2[0]
+        side_effect=lambda hash_value, **kwargs: hash_value in mm_hashes_list_2[0]
     )
     scheduler.ec_connector.update_state_after_alloc = Mock(
         wraps=scheduler.ec_connector.update_state_after_alloc

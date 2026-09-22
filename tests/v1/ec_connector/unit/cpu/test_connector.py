@@ -23,7 +23,7 @@ def test_scheduler_role_builds_only_scheduler(monkeypatch):
     assert c.connector_scheduler is fake_sched
     assert c.connector_worker is None
     c.has_cache_item("x")
-    fake_sched.has_cache_item.assert_called_once_with("x")
+    fake_sched.has_cache_item.assert_called_once_with("x", None)
 
 
 def test_worker_role_builds_only_worker(monkeypatch):

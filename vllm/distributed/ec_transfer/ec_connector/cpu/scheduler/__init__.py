@@ -53,7 +53,7 @@ class ECCPUScheduler:
         # mm_hash → block IDs to load from mmap→GPU this step.
         self._pending_loads: dict[str, list[int]] = {}
 
-    def has_cache_item(self, identifier: str) -> bool:
+    def has_cache_item(self, identifier: str, num_embeds: int | None = None) -> bool:
         if not self._is_consumer:
             return False
         entry = self._cache.get(identifier)

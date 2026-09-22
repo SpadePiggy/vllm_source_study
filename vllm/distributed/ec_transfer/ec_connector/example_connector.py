@@ -46,6 +46,7 @@ class ECExampleConnectorMetadata(ECConnectorMetadata):
 class ECExampleConnector(ECConnectorBase):
     # NOTE: This is Simple debug implementation of the EC connector.
     # It save / load the EC cache to / from the disk.
+    broadcast_loads = True
 
     def __init__(self, vllm_config: "VllmConfig", role: ECConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
@@ -123,12 +124,15 @@ class ECExampleConnector(ECConnectorBase):
     def has_cache_item(
         self,
         identifier: str,
+        num_embeds: int | None = None,
     ) -> bool:
         """
         Check if cache exist externally for the media
 
         Args:
             identifier (str): the identifier of the media.
+            num_embeds (int | None): scheduler-expected embedding count
+                (unused here; kept for the ECConnectorBase signature).
 
         Returns:
             Bool indicate that media exists in cache or not

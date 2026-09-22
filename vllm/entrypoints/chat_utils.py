@@ -986,7 +986,48 @@ class MultiModalContentParser(BaseMultiModalContentParser):
         self._add_placeholder("prompt_embeds", PROMPT_EMBEDS_PLACEHOLDER_TOKEN)
 
     def parse_image(self, image_url: str | None, uuid: str | None = None) -> None:
-        image = self._connector.fetch_image(image_url) if image_url else None
+        # vit-artifact URL-key modes (design 5.2.1/5.2.2):
+        #   VLLM_VIT_SYNTH=1 (PD):   skip fetch entirely, key = h128(url)
+        #   VIT_ARTIFACT_URL_KEY=1 (E): fetch as usual, key = h128(url)
+        # Both sides derive the SAME key from the URL string — no uuid
+        # field in the request, no content hash, one artifact per URL.
+        from vllm.entrypoints.openai.vit_artifact_synth import (
+            synth_enabled,
+            synth_placeholder,
+            synth_uuid,
+            url_key_enabled,
+        )
+
+        url_key = synth_uuid(image_url) if image_url is not None else None
+        if image_url is not None and url_key is not None and synth_enabled():
+            # PD no-image path: identity from URL, bytes from the store.
+            if uuid is not None and uuid != url_key:
+                logger.warning(
+                    "vit-artifact synth: overriding client uuid %s with "
+                    "h128(url)=%s (URL is the key)",
+                    uuid,
+                    url_key,
+                )
+            # Plan C (handoff §6.8.3.1): placeholder at the manifest grid
+            # lets the processor run without fetching; fallback to fetching
+            # when no grid is recorded (old artifact).
+            image = synth_placeholder(image_url)
+            if image is None:
+                image = self._connector.fetch_image(image_url) if image_url else None
+            uuid = url_key
+        else:
+            # E path (or synth disabled): fetch the image; when URL-key
+            # mode is on, still key it by h128(url).
+            image = self._connector.fetch_image(image_url) if image_url else None
+            if image_url is not None and url_key is not None and url_key_enabled():
+                if uuid is not None and uuid != url_key:
+                    logger.warning(
+                        "vit-artifact url-key: overriding client uuid %s with "
+                        "h128(url)=%s",
+                        uuid,
+                        url_key,
+                    )
+                uuid = url_key
 
         placeholder = self._tracker.add("image", (image, uuid))
         self._add_placeholder("image", placeholder)
@@ -1153,9 +1194,51 @@ class AsyncMultiModalContentParser(BaseMultiModalContentParser):
         return tensor, None
 
     async def _image_with_uuid_async(self, image_url: str | None, uuid: str | None):
+        # vit-artifact URL-key modes (plan C, handoff §6.8.3.1); mirrors
+        # the sync parser hook — the async parser is what the OpenAI chat
+        # path actually uses, so both must carry it.
+        #   PD synth: placeholder image at the manifest grid (no fetch)
+        #   E url-key: fetch as usual, key = h128(url)
+        from vllm.entrypoints.openai.vit_artifact_synth import (
+            synth_enabled,
+            synth_placeholder,
+            synth_uuid,
+            url_key_enabled,
+        )
+
+        url_key = synth_uuid(image_url) if image_url is not None else None
+        if image_url is not None and url_key is not None and synth_enabled():
+            if uuid is not None and uuid != url_key:
+                logger.warning(
+                    "vit-artifact synth: overriding client uuid %s with "
+                    "h128(url)=%s (URL is the key)",
+                    uuid,
+                    url_key,
+                )
+            # Plan C: a placeholder at the manifest grid lets the processor
+            # produce correct tokens/mrope without fetching; without a grid
+            # (old artifact) data=None would trip the processor-cache check,
+            # so fall back to fetching the real image in that case.
+            placeholder = await asyncio.to_thread(synth_placeholder, image_url)
+            if placeholder is not None:
+                return placeholder, url_key
+            image = (
+                await self._connector.fetch_image_async(image_url)
+                if image_url
+                else None
+            )
+            return image, url_key
         image = (
             await self._connector.fetch_image_async(image_url) if image_url else None
         )
+        if image_url is not None and url_key is not None and url_key_enabled():
+            if uuid is not None and uuid != url_key:
+                logger.warning(
+                    "vit-artifact url-key: overriding client uuid %s with h128(url)=%s",
+                    uuid,
+                    url_key,
+                )
+            uuid = url_key
         return image, uuid
 
     def parse_image(self, image_url: str | None, uuid: str | None = None) -> None:
